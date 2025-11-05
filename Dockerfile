@@ -21,8 +21,14 @@ COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 # Install PHP dependencies (ignore platform requirements)
 RUN composer install --no-interaction --no-dev --optimize-autoloader --ignore-platform-reqs
 
-# Set correct permissions
+# Set permissions
 RUN chown -R www-data:www-data storage bootstrap/cache
+
+# 👉 Point Apache to Laravel’s public directory
+ENV APACHE_DOCUMENT_ROOT=/var/www/html/public
+
+# 👉 Update Apache configuration file accordingly
+RUN sed -ri -e 's!/var/www/html!/var/www/html/public!g' /etc/apache2/sites-available/000-default.conf /etc/apache2/apache2.conf
 
 # Expose port 80
 EXPOSE 80
