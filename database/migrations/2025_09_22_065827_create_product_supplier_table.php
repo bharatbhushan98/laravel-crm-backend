@@ -13,8 +13,16 @@ return new class extends Migration {
             $table->unsignedBigInteger('supplier_id');
             $table->timestamps();
 
-            $table->foreign('product_id')->references('id')->on('products')->onDelete('cascade');
-            $table->foreign('supplier_id')->references('id')->on('suppliers')->onDelete('cascade');
+            // 👇 Custom foreign key names to avoid duplication
+            $table->foreign('product_id', 'fk_product_supplier_product')
+                  ->references('id')
+                  ->on('products')
+                  ->onDelete('cascade');
+
+            $table->foreign('supplier_id', 'fk_product_supplier_supplier')
+                  ->references('id')
+                  ->on('suppliers')
+                  ->onDelete('cascade');
         });
     }
 
@@ -23,4 +31,3 @@ return new class extends Migration {
         Schema::dropIfExists('product_supplier');
     }
 };
-

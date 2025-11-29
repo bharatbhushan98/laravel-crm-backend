@@ -8,7 +8,10 @@ return new class extends Migration {
     public function up(): void
     {
         Schema::table('purchases', function (Blueprint $table) {
-            // remove item-level columns
+            // 🔹 Step 1: Drop foreign key first
+            $table->dropForeign(['product_id']);
+
+            // 🔹 Step 2: Then drop the columns
             $table->dropColumn(['product_id', 'buy_price', 'quantity']);
         });
     }

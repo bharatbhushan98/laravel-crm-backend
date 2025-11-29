@@ -2,8 +2,9 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\{Invoice, InvoiceItem, Order, Customer, CompanyProfile};
+use App\Models\{Invoice, InvoiceItem, Order, Customer, CompanyProfile, Notification};
 use App\Support\InvoiceNumber;
+use App\Events\NewNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Barryvdh\DomPDF\Facade\Pdf;
@@ -11,9 +12,51 @@ use Maatwebsite\Excel\Facades\Excel;
 use App\Exports\InvoicesExport;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Mail\Message;
+use Carbon\Carbon;
 
 class InvoiceController extends Controller
 {
+    /**
+     * Send Notification – SAME AS ALL OTHER CONTROLLERS
+     */
+    private function notify(Request $request, string $type, string $title, string $message, array $replacements = [])
+    {
+        $user = $request->user();
+
+        $performerName = $user?->name ?? $request->header('X-User-Name', 'Unknown User');
+        $performerId   = $user?->id ?? $request->header('X-User-ID', 1);
+
+        $default = [
+            'performer_name' => $performerName,
+            'performer_id'   => $performerId,
+            'timestamp'      => Carbon::now()->format('d M Y, h:i A'),
+        ];
+
+        $replacements = array_merge($default, $replacements);
+
+        foreach ($replacements as $key => $value) {
+            $message = str_replace("{{{$key}}}", $value, $message);
+        }
+
+        $notification = Notification::create([
+            'user_id' => $performerId,
+            'type'    => $type,
+            'data'    => [
+                'title'   => $title,
+                'message' => $message,
+                'icon'    => match ($type) {
+                    'invoice_created'     => 'FileText',
+                    'invoice_sent'        => 'Mail',
+                    'invoice_downloaded'  => 'Download',
+                    default               => 'Bell'
+                },
+            ],
+            'is_read' => false,
+        ]);
+
+        broadcast(new NewNotification($notification));
+    }
+
     public function index()
     {
         $invoices = Invoice::with(['customer', 'companyProfile', 'order', 'items.product', 'items.batch'])
@@ -44,20 +87,18 @@ class InvoiceController extends Controller
             'discount_amount' => 'nullable|numeric|min:0',
             'notes' => 'nullable|string',
             'terms' => 'nullable|string',
-
             'items' => 'required_without:order_id|array|min:1',
             'items.*.product_id' => 'required_without:order_id|exists:products,id',
             'items.*.batch_id' => 'nullable|exists:batches,id',
             'items.*.description' => 'nullable|string',
             'items.*.quantity' => 'required_without:order_id|numeric|min:0.01',
-            'items.*.sell_price' => 'required_without:order_id|numeric|min:0', // Changed from unit_price to sell_price
+            'items.*.sell_price' => 'required_without:order_id|numeric|min:0',
             'items.*.discount' => 'nullable|numeric|min:0',
             'items.*.hsn_code' => 'nullable|string',
             'items.*.gst_rate' => 'required|numeric|min:0',
         ]);
 
-        return DB::transaction(function () use ($data) {
-            // Static company_profile_id set to 1
+        return DB::transaction(function () use ($data, $req) {
             $data['company_profile_id'] = 1;
 
             if (!empty($data['order_id']) && empty($data['items'])) {
@@ -74,7 +115,7 @@ class InvoiceController extends Controller
                         'batch_id' => $oi->batch_id,
                         'description' => $oi->product?->name ?? 'Unknown Product',
                         'quantity' => (float) $oi->quantity,
-                        'sell_price' => (float) $oi->sell_price, // Changed from unit_price to sell_price
+                        'sell_price' => (float) $oi->sell_price,
                         'discount' => 0,
                         'hsn_code' => $oi->product?->hsn_code ?? null,
                         'gst_rate' => $oi->product?->gst_rate ?? 0,
@@ -92,9 +133,8 @@ class InvoiceController extends Controller
 
             foreach ($data['items'] as &$it) {
                 $qty = (float) $it['quantity'];
-                $price = (float) $it['sell_price']; // Changed from unit_price to sell_price
+                $price = (float) $it['sell_price'];
                 $disc = (float) ($it['discount'] ?? 0);
-
                 $gstRate = (float) ($it['gst_rate'] ?? 0);
 
                 $it['cgst_rate'] = $gstRate / 2;
@@ -102,7 +142,6 @@ class InvoiceController extends Controller
                 $it['igst_rate'] = 0;
 
                 $lineBase = max($qty * $price - $disc, 0);
-
                 $cgstAmt = round($lineBase * $it['cgst_rate'] / 100, 2);
                 $sgstAmt = round($lineBase * $it['sgst_rate'] / 100, 2);
                 $igstAmt = round($lineBase * $it['igst_rate'] / 100, 2);
@@ -146,7 +185,7 @@ class InvoiceController extends Controller
                     'batch_id' => $it['batch_id'] ?? null,
                     'description' => $it['description'] ?? null,
                     'quantity' => $it['quantity'],
-                    'unit_price' => $it['sell_price'], // Changed from unit_price to sell_price
+                    'unit_price' => $it['sell_price'],
                     'discount' => $it['discount'] ?? 0,
                     'hsn_code' => $it['hsn_code'] ?? null,
                     'cgst_rate' => $it['cgst_rate'],
@@ -157,6 +196,20 @@ class InvoiceController extends Controller
                 ]);
             }
 
+            // NOTIFICATION: Invoice Created
+            $customer = Customer::find($data['customer_id']);
+            $this->notify(
+                $req,
+                'invoice_created',
+                'Invoice Created',
+                '{{performer_name}} created invoice {{invoice_number}} for {{customer_name}} (₹{{total_amount}}) at {{timestamp}}.',
+                [
+                    'invoice_number' => $invoice->invoice_number,
+                    'customer_name'  => $customer->name,
+                    'total_amount'   => number_format($invoice->total_amount, 2),
+                ]
+            );
+
             return response()->json([
                 'success' => true,
                 'message' => 'Invoice created',
@@ -165,7 +218,10 @@ class InvoiceController extends Controller
         });
     }
 
-    public function exportPDF($id)
+    /**
+     * EXPORT PDF + NOTIFICATION
+     */
+    public function exportPDF(Request $request, $id)
     {
         $invoice = Invoice::with(['customer', 'companyProfile', 'items.product', 'items.batch'])
             ->findOrFail($id);
@@ -175,6 +231,19 @@ class InvoiceController extends Controller
         }
 
         $pdf = Pdf::loadView('pdf.invoice', compact('invoice'));
+
+        // NOTIFICATION: Invoice Downloaded
+        $this->notify(
+            $request,
+            'invoice_downloaded',
+            'Invoice Downloaded',
+            '{{performer_name}} downloaded invoice {{invoice_number}} for {{customer_name}} at {{timestamp}}.',
+            [
+                'invoice_number' => $invoice->invoice_number,
+                'customer_name'  => $invoice->customer->name,
+            ]
+        );
+
         return $pdf->download("invoice-{$invoice->invoice_number}.pdf");
     }
 
@@ -183,7 +252,7 @@ class InvoiceController extends Controller
         $invoice = Invoice::with(['customer', 'companyProfile', 'items.product', 'items.batch'])
             ->findOrFail($id);
 
-        if(!$invoice->customer || !$invoice->customer->contact) {
+        if (!$invoice->customer || !$invoice->customer->contact) {
             return response()->json([
                 'success' => false,
                 'message' => 'Customer does not have an email address.',
@@ -193,7 +262,7 @@ class InvoiceController extends Controller
         $recipient = $req->input('to_email', $invoice->customer->contact);
         $ccEmail = $req->input('cc_email');
 
-        if($ccEmail && !filter_var($ccEmail, FILTER_VALIDATE_EMAIL)) {
+        if ($ccEmail && !filter_var($ccEmail, FILTER_VALIDATE_EMAIL)) {
             return response()->json([
                 'success' => false,
                 'message' => 'Invalid CC email address.',
@@ -220,10 +289,23 @@ class InvoiceController extends Controller
                         'mime' => 'application/pdf',
                     ]);
 
-                if($ccEmail) {
+                if ($ccEmail) {
                     $message->cc($ccEmail);
                 }
             });
+
+            // NOTIFICATION: Invoice Sent
+            $this->notify(
+                $req,
+                'invoice_sent',
+                'Invoice Sent via Email',
+                '{{performer_name}} sent invoice {{invoice_number}} to {{email_to}}' . ($ccEmail ? ' (CC: {{email_cc}})' : '') . ' at {{timestamp}}.',
+                [
+                    'invoice_number' => $invoice->invoice_number,
+                    'email_to'       => $recipient,
+                    'email_cc'       => $ccEmail ?? 'N/A',
+                ]
+            );
 
             return response()->json([
                 'success' => true,
