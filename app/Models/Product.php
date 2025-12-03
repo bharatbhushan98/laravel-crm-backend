@@ -41,38 +41,40 @@ class Product extends Model
     }
 
     // 🔹 Sync Batches (Create/Update/Delete)
-    public function syncBatches($batches)
-    {
-        $existingBatchIds = $this->batches->pluck('id')->toArray();
-        $newBatches = [];
+public function syncBatches(array $batches)
+{
+    $existing = $this->batches()->pluck('id')->toArray();
 
-        foreach ($batches as $batchData) {
-            if (isset($batchData['id']) && in_array($batchData['id'], $existingBatchIds)) {
-                // Update existing batch
-                $batch = $this->batches()->find($batchData['id']);
-                $batch->update([
-                    'batch_number' => $batchData['batch_number'],
-                    'stock_level' => $batchData['stock_level'],
-                    'expiry_date' => $batchData['expiry_date'],
-                ]);
-            } else {
-                // Create new batch
-                $newBatches[] = new Batch([
-                    'batch_number' => $batchData['batch_number'],
-                    'stock_level'  => $batchData['stock_level'],
-                    'expiry_date'  => $batchData['expiry_date'],
-                ]);
-            }
+    foreach ($batches as $batch) {
+
+        // UPDATE existing batch
+        if (!empty($batch['id'])) {
+            $this->batches()->where('id', $batch['id'])->update([
+                'batch_number' => $batch['batch_number'],
+                'stock_level'  => $batch['stock_level'],
+                'has_expiry'   => $batch['has_expiry'],
+                'expiry_date'  => $batch['has_expiry'] ? $batch['expiry_date'] : null,
+            ]);
+
+            // Remove this ID from existing so remaining are deleted later
+            $existing = array_diff($existing, [$batch['id']]);
         }
 
-        if (!empty($newBatches)) {
-            $this->batches()->saveMany($newBatches);
-        }
-
-        // Delete removed batches
-        $batchIds = array_filter(array_column($batches, 'id') ?? []);
-        if (!empty($batchIds)) {
-            $this->batches()->whereNotIn('id', $batchIds)->delete();
+        // INSERT new batch
+        else {
+            $this->batches()->create([
+                'batch_number' => $batch['batch_number'],
+                'stock_level'  => $batch['stock_level'],
+                'has_expiry'   => $batch['has_expiry'],
+                'expiry_date'  => $batch['has_expiry'] ? $batch['expiry_date'] : null,
+            ]);
         }
     }
+
+    // DELETE removed batches
+    if (!empty($existing)) {
+        $this->batches()->whereIn('id', $existing)->delete();
+    }
+}
+
 }

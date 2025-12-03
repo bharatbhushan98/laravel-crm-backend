@@ -85,7 +85,8 @@ class ProductController extends Controller
             'batches' => 'sometimes|array',
             'batches.*.batch_number' => 'required|string|max:100',
             'batches.*.stock_level'  => 'required|numeric|min:0',
-            'batches.*.expiry_date'  => 'required|date',
+            'batches.*.has_expiry'   => 'sometimes|boolean',
+            'batches.*.expiry_date'  => 'required_if:batches.*.has_expiry,true|nullable|date|after:today',
         ]);
 
         $productData = collect($validated)->except(['batches', 'supplier_ids'])->toArray();
@@ -222,11 +223,11 @@ class ProductController extends Controller
             'max_stock' => 'sometimes|integer',
             'sku' => 'sometimes|string|max:100|unique:products,sku,' . $id,
             'product_code' => 'sometimes|string|max:100|unique:products,product_code,' . $id,
-            'batches' => 'sometimes|array',
+            'batches.*.id' => 'nullable|exists:batches,id',
             'batches.*.batch_number' => 'required|string|max:100',
-            'batches.*.stock_level' => 'required|numeric|min:0',
-            'batches.*.expiry_date' => 'required|date',
-            'batches.*.id' => 'sometimes|exists:batches,id',
+            'batches.*.stock_level'  => 'required|numeric|min:0',
+            'batches.*.has_expiry'   => 'sometimes|boolean',
+            'batches.*.expiry_date'  => 'required_if:batches.*.has_expiry,true|nullable|date|after:today',
         ]);
 
         $changes = [];
